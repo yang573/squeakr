@@ -92,7 +92,8 @@ int main ( int argc, char *argv[] ) {
   };
 
 	auto enusure_size_is_specified = [](const CountOpts countopt) -> bool {
-		if (!countopt.setqbits &&  countopt.numthreads == 0) {
+		return true;
+		if (!countopt.setqbits && countopt.numthreads == 0) {
 			std::string e = "Size option is required if the thread count is greater than 1.";
 			throw std::runtime_error{e};
 		}

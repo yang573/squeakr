@@ -304,7 +304,7 @@ int count_main(CountOpts &opts)
 
 	//Initialize the main  QF
 	CQF<KeyObject> cqf(opts.qbits, num_hash_bits, hash, SEED);
-	if (opts.numthreads == 1)
+	//if (opts.numthreads == 1)
 		cqf.set_auto_resize();
 	CQF<KeyObject> *local_cqfs = (CQF<KeyObject>*)calloc(MAX_NUM_THREADS,
 																											 sizeof(CQF<KeyObject>));
@@ -315,6 +315,8 @@ int count_main(CountOpts &opts)
 		local_cqfs[i] = CQF<KeyObject>(QBITS_LOCAL_QF, num_hash_bits, hash, SEED);
 		flush_object* obj = (flush_object*)malloc(sizeof(flush_object));
 		obj->local_cqf = &local_cqfs[i];
+		obj->local_cqf->set_auto_resize();
+		//printf("\t%d\n", obj->local_cqf->get_auto_resize());
 		obj->main_cqf = &cqf;
 		obj->ksize = opts.ksize;
 		obj->exact = opts.exact;
