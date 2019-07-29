@@ -208,8 +208,8 @@ static bool fastq_to_uint64kmers_prod(flush_object* obj)
 	while (num_files) {
 		while (ip_files.pop(fp)) {
 			if (reader::fastq_read_parts(fp->mode, fp)) {
-				ip_files.push(fp);
 				chunk c(fp->part, fp->size);
+				ip_files.push(fp);
 				if (!reads_to_kmers(c, obj)) {
 					obj->console->error("Insertion in the CQF failed.");
 					abort();
@@ -315,7 +315,7 @@ int count_main(CountOpts &opts)
 		local_cqfs[i] = CQF<KeyObject>(QBITS_LOCAL_QF, num_hash_bits, hash, SEED);
 		flush_object* obj = (flush_object*)malloc(sizeof(flush_object));
 		obj->local_cqf = &local_cqfs[i];
-		obj->local_cqf->set_auto_resize();
+		//obj->local_cqf->set_auto_resize();
 		//printf("\t%d\n", obj->local_cqf->get_auto_resize());
 		obj->main_cqf = &cqf;
 		obj->ksize = opts.ksize;

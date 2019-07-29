@@ -51,7 +51,7 @@
 #define BILLION 1000000000L
 
 // Global for multithreading gqf resize
-#define CQF_RESIZE_CHUNK 1024
+#define CQF_RESIZE_CHUNK 64
 
 #ifdef DEBUG
 #define PRINT_DEBUG 1
@@ -540,6 +540,14 @@ static inline uint64_t get_slot(const QF *qf, uint64_t index)
 	return (uint64_t)(((*p) >> (((index % QF_SLOTS_PER_BLOCK) *
 															 qf->metadata->bits_per_slot) % 8)) &
 										BITMASK(qf->metadata->bits_per_slot));
+}
+
+static void print_bits_per_slot() {
+    printf("\tQF_BITS_PER_SLOT: %d\n", QF_BITS_PER_SLOT);
+}
+
+static void print_slots_per_block() {
+    printf("\tQF_SLOTS_PER_BLOCK: %llu\n", QF_SLOTS_PER_BLOCK);
 }
 
 static inline void set_slot(const QF *qf, uint64_t index, uint64_t value)
@@ -1839,12 +1847,6 @@ void qf_reset(QF *qf)
 int64_t qf_resize_malloc(QF *qf, uint64_t nslots)
 {
 	QF new_qf;
-	if (!qf_malloc(&new_qf, nslots, qf->metadata->key_bits,
-								 qf->metadata->value_bits, qf->metadata->hash_mode,
-								 qf->metadata->seed))
-		return false;
-	if (qf->metadata->auto_resize)
-		qf_set_auto_resize(&new_qf, true);
 
 	return qf_resize_malloc_helper(qf, nslots, &new_qf, false);
 }
@@ -1858,9 +1860,9 @@ static void qf_resize_runtimedata_copy(QF *qf, QF *new_qf)
 	new_qf->runtimedata->current_chunk = qf->runtimedata->current_chunk;
 }
 
-int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *new_qf, bool is_file)
+int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *local_new_qf, bool is_file)
 {
-	//printf("\tQF_SLOTS_PER_BLOCK: %llu\n", QF_SLOTS_PER_BLOCK); // TODO: REMOVE
+	static QF *new_qf;
 
 #ifdef LOG_WAIT_TIME
 	qf_spin_lock(qf, &qf->runtimedata->nthread_lock, qf->runtimedata->num_locks+1, QF_WAIT_FOR_LOCK);
@@ -1870,6 +1872,14 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *new_qf, bool is_fil
 	qf_spin_lock(&qf->runtimedata->iterator_lock, QF_WAIT_FOR_LOCK);
 #endif
 	if (qf->runtimedata->nthreads == 0) {
+		new_qf = local_new_qf;
+		if (!qf_malloc(new_qf, nslots, qf->metadata->key_bits,
+								 qf->metadata->value_bits, qf->metadata->hash_mode,
+								 qf->metadata->seed))
+			return false;
+		if (qf->metadata->auto_resize)
+			qf_set_auto_resize(new_qf, true);
+
 		qf->runtimedata->ret_numkeys = 0;
 		qf->runtimedata->resize_error = 0;
 		qf->runtimedata->current_chunk = 0;
@@ -1901,11 +1911,14 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *new_qf, bool is_fil
 			break;
 		}
 		// Moves chunk index to beginning of next block
+		qf->runtimedata->current_chunk += CQF_RESIZE_CHUNK;
+		/*
 		if (QF_SLOTS_PER_BLOCK <= CQF_RESIZE_CHUNK) {
 			qf->runtimedata->current_chunk += CQF_RESIZE_CHUNK;
 		} else {
 			qf->runtimedata->current_chunk += QF_SLOTS_PER_BLOCK;
 		}
+		*/
 		chunk_end = qf->runtimedata->current_chunk;
 		qf_spin_unlock(&qf->runtimedata->iterator_lock);
 
@@ -1923,7 +1936,7 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *new_qf, bool is_fil
 			}
 
 			thread_ret_numkeys++;
-		} while(qfi.current < chunk_end && !qfi_end(&qfi));
+		} while(qfi.run < chunk_end && !qfi_end(&qfi));
 	}
 
 #ifdef LOG_WAIT_TIME
@@ -1974,7 +1987,6 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *new_qf, bool is_fil
 
 	while (qf->runtimedata->nthreads != 0) { sleep(1); } // TODO: Change this!!!
 
-	//printf("\t%ld keys moved\n", qf->runtimedata->ret_numkeys);
 	if (qf->runtimedata->resize_error && ret_error != 0)
 		return ret_error;
 	else
@@ -2346,7 +2358,7 @@ int64_t qf_iterator_from_position(const QF *qf, QFi *qfi, uint64_t position)
 	qfi->cur_length = 1;
 #endif
 
-	if (qfi->current >= qf->metadata->nslots)
+	if (qfi->current >= qf->metadata->xnslots)
 		return QFI_INVALID;
 	return qfi->current;
 }
