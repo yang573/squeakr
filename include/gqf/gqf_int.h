@@ -81,14 +81,8 @@ extern "C" {
 		pc_t pc_nelts;
 		pc_t pc_ndistinct_elts;
 		pc_t pc_noccupied_slots;
-		int nthreads;
-		uint64_t current_chunk;
-		int64_t ret_numkeys;
-		bool resize_error;
 		uint64_t num_locks;
 		volatile int metadata_lock;
-		volatile int nthread_lock;
-		volatile int iterator_lock;
 		volatile int *locks;
 		wait_time_data *wait_times;
 	} quotient_filter_runtime_data;
