@@ -208,8 +208,8 @@ static bool fastq_to_uint64kmers_prod(flush_object* obj)
 	while (num_files) {
 		while (ip_files.pop(fp)) {
 			if (reader::fastq_read_parts(fp->mode, fp)) {
-				chunk c(fp->part, fp->size);
 				ip_files.push(fp);
+				chunk c(fp->part, fp->size);
 				if (!reads_to_kmers(c, obj)) {
 					obj->console->error("Insertion in the CQF failed.");
 					abort();

@@ -123,6 +123,8 @@ extern "C" {
 
 	int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *new_qf, bool is_file);
 
+	int64_t qf_resize_malloc_dev(QF *qf, uint64_t nslots);
+
 	/* Turn on automatic resizing.  Resizing is performed by calling
 		 qf_resize_malloc, so the CQF must meet the requirements of that
 		 function. */
