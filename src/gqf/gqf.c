@@ -633,7 +633,7 @@ static inline uint64_t run_end(const QF *qf, uint64_t hash_bucket_index)
 
 static inline int offset_lower_bound(const QF *qf, uint64_t slot_index)
 {
-	const qfblock * b = get_block(qf, slot_index / QF_SLOTS_PER_BLOCK);
+	const qfblock *b = get_block(qf, slot_index / QF_SLOTS_PER_BLOCK);
 	const uint64_t slot_offset = slot_index % QF_SLOTS_PER_BLOCK;
 	const uint64_t boffset = b->offset;
 	const uint64_t occupieds = b->occupieds[0] & BITMASK(slot_offset+1);
@@ -1686,19 +1686,23 @@ uint64_t qf_init(QF *qf, uint64_t nslots, uint64_t key_bits, uint64_t value_bits
 	qf->metadata->ndistinct_elts = 0;
 	qf->metadata->noccupied_slots = 0;
 
-	qf->runtimedata->num_locks = (qf->metadata->xnslots/NUM_SLOTS_TO_LOCK)+4;
+	qf->runtimedata->num_locks = (qf->metadata->xnslots/NUM_SLOTS_TO_LOCK)+5;
 
 	pc_init(&qf->runtimedata->pc_nelts, (int64_t*)&qf->metadata->nelts, 8, 100);
 	pc_init(&qf->runtimedata->pc_ndistinct_elts, (int64_t*)&qf->metadata->ndistinct_elts, 8, 100);
 	pc_init(&qf->runtimedata->pc_noccupied_slots, (int64_t*)&qf->metadata->noccupied_slots, 8, 100);
 	/* initialize container resize */
 	qf->runtimedata->auto_resize = 0;
+	qf->runtimedata->resize_init = 0;
+	qf->runtimedata->resize_in_progress = 0;
+	qf->runtimedata->resize_finished = 0;
 	qf->runtimedata->new_qf = NULL;
 	qf->runtimedata->container_resize = qf_resize_malloc;
 	qf->runtimedata->nthreads = 0;
 	/* initialize all the locks to 0 */
 	qf->runtimedata->nthread_lock = 0;
 	qf->runtimedata->iterator_lock = 0;
+	qf->runtimedata->insert_lock = 0;
 	qf->runtimedata->metadata_lock = 0;
 	qf->runtimedata->locks = (volatile int *)calloc(qf->runtimedata->num_locks,
 																					sizeof(volatile int));
@@ -1795,6 +1799,15 @@ bool qf_malloc(QF *qf, uint64_t nslots, uint64_t key_bits, uint64_t
 		return false;
 }
 
+// DEBUG: Remove
+bool qf_free_debug(QF *qf, int current_thread)
+{
+	printf("\tqf_free on %p by thread %d'th\n", qf, current_thread);
+	bool ret = qf_free(qf);
+	printf("\tqf_free finished\n");
+	return ret;
+}
+
 bool qf_free(QF *qf)
 {
 	assert(qf->metadata != NULL);
@@ -1837,6 +1850,42 @@ void qf_reset(QF *qf)
 #endif
 }
 
+int64_t qf_resize_malloc_dev(QF *qf, uint64_t nslots)
+{
+	QF new_qf;
+	if (!qf_malloc(&new_qf, nslots, qf->metadata->key_bits,
+								 qf->metadata->value_bits, qf->metadata->hash_mode,
+								 qf->metadata->seed))
+		return -1;
+	if (qf->runtimedata->auto_resize)
+		qf_set_auto_resize(&new_qf, true);
+
+	// copy keys from qf into new_qf
+	QFi qfi;
+	qf_iterator_from_position(qf, &qfi, 0);
+	int ret = 0;
+	int64_t ret_numkeys = 0;
+	do {
+		uint64_t key, value, count;
+		qfi_get_hash(&qfi, &key, &value, &count);
+		qfi_next(&qfi);
+		ret = qf_insert(&new_qf, key, value, count, QF_NO_LOCK | QF_KEY_IS_HASH);
+		if (ret < 0) {
+			if (ret == QF_NEED_RESIZE)
+				continue;
+			
+			fprintf(stderr, "Failed to insert key: %ld into the new CQF.\n", key);
+			return ret;
+		}
+		ret_numkeys++;
+	} while(!qfi_end(&qfi));
+
+	qf_free(qf);
+	memcpy(qf, &new_qf, sizeof(QF));
+
+	return ret_numkeys;
+}
+
 int64_t qf_resize_malloc(QF *qf, uint64_t nslots)
 {
 	QF new_qf;
@@ -1847,14 +1896,26 @@ int64_t qf_resize_malloc(QF *qf, uint64_t nslots)
 int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *thread_new_qf, bool is_file)
 {
 	QF *func_new_qf;
+	int current_thread;
 
 #ifdef LOG_WAIT_TIME
 	qf_spin_lock(qf, &qf->runtimedata->nthread_lock, qf->runtimedata->num_locks+1, QF_WAIT_FOR_LOCK);
 	qf_spin_lock(qf, &qf->runtimedata->iterator_lock, qf->runtimedata->num_locks+2, QF_WAIT_FOR_LOCK);
+	//qf_spin_lock(qf, &qf->runtimedata->insert_lock, qf->runtimedata->num_locks+3, QF_WAIT_FOR_LOCK);
 #else
 	qf_spin_lock(&qf->runtimedata->nthread_lock, QF_WAIT_FOR_LOCK);
 	qf_spin_lock(&qf->runtimedata->iterator_lock, QF_WAIT_FOR_LOCK);
+	//qf_spin_lock(&qf->runtimedata->insert_lock, QF_WAIT_FOR_LOCK);
 #endif
+	if (qf->runtimedata->resize_finished) {
+		qf_spin_unlock(&qf->runtimedata->nthread_lock);
+		qf_spin_unlock(&qf->runtimedata->iterator_lock);
+		//qf_spin_unlock(&qf->runtimedata->insert_lock);
+		return 0;
+	}
+
+	current_thread = qf->runtimedata->nthreads;
+	printf("\tBegin resize on thread %d'th qf %p with nslots %lu\n", current_thread, qf, qf->metadata->nslots);
 	if (qf->runtimedata->nthreads == 0) {
 		qf->runtimedata->new_qf = thread_new_qf;
 		if (!qf_malloc(qf->runtimedata->new_qf, nslots, qf->metadata->key_bits,
@@ -1867,12 +1928,15 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *thread_new_qf, bool
 		qf->runtimedata->ret_numkeys = 0;
 		qf->runtimedata->resize_error = 0;
 		qf->runtimedata->current_chunk = 0;
+		qf->runtimedata->resize_in_progress = 1;
+		qf->runtimedata->resize_finished = 0;
 	}
 	func_new_qf = qf->runtimedata->new_qf;
 	qf->runtimedata->nthreads += 1;
-	// debug: add current thread ID to a linkedlist
 	qf_spin_unlock(&qf->runtimedata->nthread_lock);
 	qf_spin_unlock(&qf->runtimedata->iterator_lock);
+	//qf_spin_unlock(&qf->runtimedata->insert_lock);
+	//printf("Passed initial resize checks\n");
 
 	// copy keys from qf into func_new_qf
 	QFi qfi;
@@ -1897,59 +1961,87 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *thread_new_qf, bool
 		}
 		// Moves chunk index to beginning of next block
 		qf->runtimedata->current_chunk += CQF_RESIZE_CHUNK;
-		/*
-		if (QF_SLOTS_PER_BLOCK <= CQF_RESIZE_CHUNK) {
-			qf->runtimedata->current_chunk += CQF_RESIZE_CHUNK;
-		} else {
-			qf->runtimedata->current_chunk += QF_SLOTS_PER_BLOCK;
-		}
-		*/
 		chunk_end = qf->runtimedata->current_chunk;
 		qf_spin_unlock(&qf->runtimedata->iterator_lock);
 
+		// TODO: Why isn't the var init outside the while loop?
+		uint64_t key, value, count;
+		int ret = 0;
+		int loop_counter = 0;
+		//printf("from %lu to %lu\n", qfi.current, chunk_end);
 		do {
-			uint64_t key, value, count;
-			qfi_get_hash(&qfi, &key, &value, &count);
-			qfi_next(&qfi);
-			int ret = qf_insert(func_new_qf, key, value, count, QF_NO_LOCK | QF_KEY_IS_HASH);
+			if (ret != QF_NEED_RESIZE) {
+				qfi_get_hash(&qfi, &key, &value, &count);
+				qfi_next(&qfi);
+			} else {
+				printf("Resize finished, returning to previous resize\n");
+			}
+
+			ret = qf_insert(func_new_qf, key, value, count, QF_NO_LOCK | QF_KEY_IS_HASH);
 			if (ret < 0) {
+				if (ret == QF_NEED_RESIZE)
+					continue;
+
 				fprintf(stderr, "Failed to insert key: %ld into the new CQF.\n", key);
 				ret_error = ret;
 				qf->runtimedata->resize_error = 1;
-				// debug: remove current thread ID to a linkedlist
 				break;
 			}
 
+			loop_counter++;
 			thread_ret_numkeys++;
 		} while(qfi.run < chunk_end && !qfi_end(&qfi));
 	}
 
 #ifdef LOG_WAIT_TIME
 	qf_spin_lock(qf, &qf->runtimedata->nthread_lock, qf->runtimedata->num_locks+1, QF_WAIT_FOR_LOCK);
+	//qf_spin_lock(qf, &qf->runtimedata->insert_lock, qf->runtimedata->num_locks+3, QF_WAIT_FOR_LOCK);
 #else
 	qf_spin_lock(&qf->runtimedata->nthread_lock, QF_WAIT_FOR_LOCK);
+	//qf_spin_lock(&qf->runtimedata->insert_lock, QF_WAIT_FOR_LOCK);
 #endif
+	printf("\tEnd resize with %d threads\n", qf->runtimedata->nthreads);
+	//printf("\tEnd resize on thread %d'th qf %p with nslots %lu\n", current_thread, qf, qf->metadata->nslots);
+	qf->runtimedata->resize_init = 0;
+	qf->runtimedata->resize_in_progress = 0;
+	qf->runtimedata->resize_finished = 1;
+
+	qf->runtimedata->nthreads -= 1;
+	qf->runtimedata->ret_numkeys += thread_ret_numkeys;
+
 	if (qf->runtimedata->resize_error) {
 		fprintf(stderr, "Failed to insert all keys into new CQF.\n");
 
-		if (qf->runtimedata->nthreads == 1) {
+		if (qf->runtimedata->nthreads == 0) {
 			if (is_file) {
 				// Delete initialized new CQF
 				qf_deletefile(func_new_qf);
 			} else {
-				qf_free(func_new_qf);
+				qf_free_debug(func_new_qf, current_thread);
+				//qf_free(func_new_qf);
 			}
 		}
+		qf_spin_unlock(&qf->runtimedata->nthread_lock);
+		//qf_spin_unlock(&qf->runtimedata->insert_lock);
 	} else {
 		// Performed only by last thread to exit
-		if (qf->runtimedata->nthreads == 1) {
+		if (qf->runtimedata->nthreads == 0) {
+			
 			// Copy over to func_new_qf
 			// Data gets copied back with memcpy()
-			func_new_qf->runtimedata->nthread_lock = qf->runtimedata->nthread_lock;
-			func_new_qf->runtimedata->iterator_lock = qf->runtimedata->iterator_lock;
+			//printf("qf: %p func_new_qf: %p\n", qf, func_new_qf);
+			//printf("qf->runtime: %p func_new_qf->runtime: %p\n", qf->runtimedata, func_new_qf->runtimedata);
+			//printf("\tNthread Lock before: %d %d\n", qf->runtimedata->nthread_lock, func_new_qf->runtimedata->nthread_lock);
+			//printf("\tNthread Lock references: %p %p\n", &qf->runtimedata->nthread_lock, &func_new_qf->runtimedata->nthread_lock);
+			printf("\tInsert Lock before: %d %d\n", qf->runtimedata->insert_lock, func_new_qf->runtimedata->insert_lock);
+			//func_new_qf->runtimedata->nthread_lock = qf->runtimedata->nthread_lock;
+			//func_new_qf->runtimedata->iterator_lock = qf->runtimedata->iterator_lock;
+			//func_new_qf->runtimedata->insert_lock = qf->runtimedata->insert_lock; // TODO: Needed??
 			func_new_qf->runtimedata->nthreads = qf->runtimedata->nthreads;
 			func_new_qf->runtimedata->ret_numkeys = qf->runtimedata->ret_numkeys;
 			func_new_qf->runtimedata->current_chunk = qf->runtimedata->current_chunk;
+			qf_spin_unlock(&qf->runtimedata->nthread_lock);
+			//qf_spin_unlock(&qf->runtimedata->insert_lock);
 			
 			if (is_file) {
 				// Copy old QF path in temp and delete old CQF
@@ -1966,18 +2058,25 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *thread_new_qf, bool
 				rename(qf->runtimedata->f_info.filepath, path);
 				strcpy(qf->runtimedata->f_info.filepath, path);
 			} else {
-				qf_free(qf);
+				qf_free_debug(qf, current_thread);
+				//qf_free(qf);
 				memcpy(qf, func_new_qf, sizeof(QF));
 			}
+			//printf("qf->runtime: %p func_new_qf->runtime: %p\n", qf->runtimedata, func_new_qf->runtimedata);
+			//printf("\tNthread Lock after: %d %d\n", qf->runtimedata->nthread_lock, func_new_qf->runtimedata->nthread_lock);
+			//printf("\tNthread Lock references: %p %p\n", &qf->runtimedata->nthread_lock, &func_new_qf->runtimedata->nthread_lock);
+			//printf("\tInsert Lock after: %d %d\n", qf->runtimedata->insert_lock, func_new_qf->runtimedata->insert_lock);
+		} else {
+			qf_spin_unlock(&qf->runtimedata->nthread_lock);
+			//qf_spin_unlock(&qf->runtimedata->insert_lock);
 		}
 	}
-	// debug: remove current thread ID from a linkedlist
-	qf->runtimedata->nthreads -= 1;
-	qf->runtimedata->ret_numkeys += thread_ret_numkeys;
-	qf_spin_unlock(&qf->runtimedata->nthread_lock);
 
+	//printf("Before barrier\n");
+	//__sync_synchronize();
 	while (qf->runtimedata->nthreads != 0) { sleep(1); } // TODO: Change this!!!
-
+	//printf("After barrier\n");
+	
 	if (qf->runtimedata->resize_error && ret_error != 0)
 		return ret_error;
 	else
@@ -2006,13 +2105,16 @@ uint64_t qf_resize(QF* qf, uint64_t nslots, void* buffer, uint64_t buffer_len)
 
 	// copy keys from qf into new_qf
 	QFi qfi;
+	int ret = 0;
 	qf_iterator_from_position(qf, &qfi, 0);
 	do {
 		uint64_t key, value, count;
-		qfi_get_hash(&qfi, &key, &value, &count);
-		qfi_next(&qfi);
-		int ret = qf_insert(&new_qf, key, value, count, QF_NO_LOCK | QF_KEY_IS_HASH);
-		if (ret < 0) {
+		if (ret != QF_NEED_RESIZE) {
+			qfi_get_hash(&qfi, &key, &value, &count);
+			qfi_next(&qfi);
+		}
+		ret = qf_insert(&new_qf, key, value, count, QF_NO_LOCK | QF_KEY_IS_HASH);
+		if (ret < 0 && ret != QF_NEED_RESIZE) {
 			fprintf(stderr, "Failed to insert key: %ld into the new CQF.\n", key);
 			abort();
 		}
@@ -2035,14 +2137,38 @@ void qf_set_auto_resize(QF* qf, bool enabled)
 int qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, uint8_t
 							flags)
 {
+#ifdef LOG_WAIT_TIME
+	qf_spin_lock(qf, &qf->runtimedata->insert_lock, qf->runtimedata->num_locks+1, QF_WAIT_FOR_LOCK);
+#else
+	qf_spin_lock(&qf->runtimedata->insert_lock, QF_WAIT_FOR_LOCK);
+#endif
+	// Checks if resize is happening and joins if so
+	if (qf->runtimedata->resize_init) {
+		if (!qf->runtimedata->resize_in_progress)
+			while (!qf->runtimedata->resize_in_progress) { sleep(1); } // TODO: CHANGE THIS TOO!!!
+		qf_spin_unlock(&qf->runtimedata->insert_lock);
+		
+		printf("\tJoining resize, new_qf: %p\n", qf->runtimedata->new_qf);
+		if (qf->runtimedata->container_resize(qf, qf->metadata->nslots * 2) < 0)
+		{
+			fprintf(stdout, "Resizing failed.\n");
+			return QF_NO_SPACE;
+		}
+		printf("\tLeaving resize pool\n");
+		return QF_NEED_RESIZE;
+	} else {
+		qf_spin_unlock(&qf->runtimedata->insert_lock);
+	}
+
 	// We fill up the CQF up to 95% load factor.
 	// This is a very conservative check.
 	if (qf_get_num_occupied_slots(qf) >= qf->metadata->nslots * 0.95) {
 		if (qf->runtimedata->auto_resize) {
 			fprintf(stdout, "Resizing the CQF.\n");
+			qf->runtimedata->resize_init = 1;
 			if (qf->runtimedata->container_resize(qf, qf->metadata->nslots * 2) < 0)
 			{
-				fprintf(stdout, "Resizing the failed.\n");
+				fprintf(stdout, "Resizing failed.\n");
 				return QF_NO_SPACE;
 			}
 		} else
@@ -2069,11 +2195,17 @@ int qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, uint8_t
 	// check for fullness based on the distance from the home slot to the slot
 	// in which the key is inserted
 	if (ret == QF_NO_SPACE || ret > DISTANCE_FROM_HOME_SLOT_CUTOFF) {
+		if (ret == QF_NO_SPACE)
+			printf("\tret == QF_NO_SPACE\n");
+		else if (ret > DISTANCE_FROM_HOME_SLOT_CUTOFF)
+			printf("\tret > DISTANCE_FROM_HOME_SLOT_CUTOFF\n");
+		
 		float load_factor = qf_get_num_occupied_slots(qf) /
 			(float)qf->metadata->nslots;
 		fprintf(stdout, "Load factor: %lf\n", load_factor);
 		if (qf->runtimedata->auto_resize) {
 			fprintf(stdout, "Resizing the CQF.\n");
+			qf->runtimedata->resize_init = 1;
 			if (qf->runtimedata->container_resize(qf, qf->metadata->nslots * 2) > 0)
 			{
 				if (ret == QF_NO_SPACE) {

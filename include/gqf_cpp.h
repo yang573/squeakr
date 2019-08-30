@@ -54,7 +54,6 @@ class CQF {
 		}
 
 		void set_auto_resize(void) { qf_set_auto_resize(&cqf, true); }
-		uint32_t get_auto_resize(void) { return cqf.runtimedata->auto_resize; } // DEBUG: Remove this
 		int64_t get_unique_index(const key_obj& k, uint8_t flags) const {
 			return qf_get_unique_index(&cqf, k.key, k.value, flags);
 		}

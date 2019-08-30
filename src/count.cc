@@ -70,6 +70,8 @@ static bool dump_local_qf_to_main(flush_object *obj)
 		if (ret == QF_NO_SPACE) {
 			obj->console->error("The CQF is full. Please rerun the with a larger size.");
 			return false;
+		} else if (ret == QF_NEED_RESIZE) {
+			continue;
 		}
 		++it;
 	} while (!it.done());
@@ -123,21 +125,25 @@ start_read:
 			 * If lock can't be acquired in the first attempt then
 			 * insert the item in the local QF.
 			 */
-			KeyObject k(item, 0, 1);
-			int ret = obj->main_cqf->insert(k, QF_TRY_ONCE_LOCK);
-			if (ret == QF_NO_SPACE) {
-				obj->console->error("The CQF is full. Please rerun the with a larger size.");
-				exit(1);
-			} else if (ret == -2) {
-				obj->local_cqf->insert(k, QF_NO_LOCK);
-				obj->count++;
-				// check of the load factor of the local QF is more than 50%
-				if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
-					if (!dump_local_qf_to_main(obj))
-						return false;
-					obj->count = 0;
+			int ret = 0;
+			do {
+				KeyObject k(item, 0, 1);
+				ret = obj->main_cqf->insert(k, QF_TRY_ONCE_LOCK);
+				if (ret == QF_NO_SPACE) {
+					obj->console->error("The CQF is full. Please rerun the with a larger size.");
+					exit(1);
+				} else if (ret == QF_COULDNT_LOCK) {
+					obj->local_cqf->insert(k, QF_NO_LOCK);
+					obj->count++;
+					// check of the load factor of the local QF is more than 50%
+					if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
+						if (!dump_local_qf_to_main(obj))
+							return false;
+						obj->count = 0;
+					}
 				}
-			}
+			} while (ret == QF_NEED_RESIZE);
+			
 
 			uint64_t next = (first << 2) & BITMASK(2 * obj->ksize);
 			uint64_t next_rev = first_rev >> 2;
@@ -165,21 +171,23 @@ start_read:
 				 * If lock can't be accuired in the first attempt then
 				 * insert the item in the local QF.
 				 */
-				KeyObject k(item, 0, 1);
-				ret = obj->main_cqf->insert(k, QF_TRY_ONCE_LOCK);
-				if (ret == QF_NO_SPACE) {
-					obj->console->error("The CQF is full. Please rerun the with a larger size.");
-					exit(1);
-				} else if (ret == -2) {
-					obj->local_cqf->insert(k, QF_NO_LOCK);
-					obj->count++;
-					// check of the load factor of the local QF is more than 50%
-					if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
-						if (!dump_local_qf_to_main(obj))
-							return false;
-						obj->count = 0;
+				do {
+					KeyObject k(item, 0, 1);
+					ret = obj->main_cqf->insert(k, QF_TRY_ONCE_LOCK);
+					if (ret == QF_NO_SPACE) {
+						obj->console->error("The CQF is full. Please rerun the with a larger size.");
+						exit(1);
+					} else if (ret == QF_COULDNT_LOCK) {
+						obj->local_cqf->insert(k, QF_NO_LOCK);
+						obj->count++;
+						// check of the load factor of the local QF is more than 50%
+						if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
+							if (!dump_local_qf_to_main(obj))
+								return false;
+							obj->count = 0;
+						}
 					}
-				}
+				} while (ret == QF_NEED_RESIZE);
 
 				next = (next << 2) & BITMASK(2*obj->ksize);
 				next_rev = next_rev >> 2;

@@ -112,6 +112,9 @@ extern "C" {
 	bool qf_malloc(QF *qf, uint64_t nslots, uint64_t key_bits, uint64_t
 								 value_bits, enum qf_hashmode hash, uint32_t seed);
 
+	// DEBUG: Remove
+	bool qf_free_debug(QF *qf, int current_thread);
+
 	bool qf_free(QF *qf);
 
 	/* Resize the QF to the specified number of slots.  Uses malloc() to
@@ -137,6 +140,7 @@ extern "C" {
 #define QF_NO_SPACE (-1)
 #define QF_COULDNT_LOCK (-2)
 #define QF_DOESNT_EXIST (-3)
+#define QF_NEED_RESIZE (-4)
 	
 	/* Increment the counter for this key/value pair by count. 
 	 * Return value:
@@ -249,8 +253,8 @@ extern "C" {
 	typedef struct quotient_filter_iterator quotient_filter_iterator;
 	typedef quotient_filter_iterator QFi;
 
-#define QF_INVALID (-4)
-#define QFI_INVALID (-5)
+#define QF_INVALID (-5)
+#define QFI_INVALID (-6)
 	
 	/* Initialize an iterator starting at the given position.
 	 * Return value:

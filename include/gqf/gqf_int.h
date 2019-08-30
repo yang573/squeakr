@@ -77,6 +77,9 @@ extern "C" {
 	typedef struct quotient_filter_runtime_data {
 		file_info f_info;
 		uint32_t auto_resize;
+		uint32_t resize_init;
+		uint32_t resize_in_progress;
+		uint32_t resize_finished;
 		QF *new_qf;
 		int nthreads;
 		uint64_t current_chunk;
@@ -89,6 +92,7 @@ extern "C" {
 		uint64_t num_locks;
 		volatile int nthread_lock;
 		volatile int iterator_lock;
+		volatile int insert_lock;
 		volatile int metadata_lock;
 		volatile int *locks;
 		wait_time_data *wait_times;
