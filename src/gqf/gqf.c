@@ -2145,8 +2145,11 @@ int qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, uint8_t
 	// Checks if resize is happening and joins if so
 	if (qf->runtimedata->resize_init) {
 		if (!qf->runtimedata->resize_in_progress)
-			while (!qf->runtimedata->resize_in_progress) { sleep(1); } // TODO: CHANGE THIS TOO!!!
+			while (!qf->runtimedata->resize_in_progress && !qf->runtimedata->resize_finished) { sleep(1); } // TODO: CHANGE THIS TOO!!!
 		qf_spin_unlock(&qf->runtimedata->insert_lock);
+
+		if (qf->runtimedata->resize_finished)
+			return QF_NEED_RESIZE;
 		
 		printf("\tJoining resize, new_qf: %p\n", qf->runtimedata->new_qf);
 		if (qf->runtimedata->container_resize(qf, qf->metadata->nslots * 2) < 0)
