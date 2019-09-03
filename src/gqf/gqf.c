@@ -2144,8 +2144,7 @@ int qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, uint8_t
 #endif
 	// Checks if resize is happening and joins if so
 	if (qf->runtimedata->resize_init) {
-		if (!qf->runtimedata->resize_in_progress)
-			while (!qf->runtimedata->resize_in_progress && !qf->runtimedata->resize_finished) { sleep(1); } // TODO: CHANGE THIS TOO!!!
+		while (!qf->runtimedata->resize_in_progress && qf->runtimedata->resize_init) { sleep(1); } // TODO: CHANGE THIS TOO!!!
 		qf_spin_unlock(&qf->runtimedata->insert_lock);
 
 		if (qf->runtimedata->resize_finished)
