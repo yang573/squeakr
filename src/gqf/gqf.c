@@ -1977,7 +1977,7 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *thread_new_qf, bool
 				printf("Resize finished, returning to previous resize\n");
 			}
 
-			ret = qf_insert(func_new_qf, key, value, count, QF_NO_LOCK | QF_KEY_IS_HASH);
+			ret = qf_insert(func_new_qf, key, value, count, QF_WAIT_FOR_LOCK | QF_KEY_IS_HASH);
 			if (ret < 0) {
 				if (ret == QF_NEED_RESIZE)
 					continue;
@@ -2033,7 +2033,7 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *thread_new_qf, bool
 			//printf("qf->runtime: %p func_new_qf->runtime: %p\n", qf->runtimedata, func_new_qf->runtimedata);
 			//printf("\tNthread Lock before: %d %d\n", qf->runtimedata->nthread_lock, func_new_qf->runtimedata->nthread_lock);
 			//printf("\tNthread Lock references: %p %p\n", &qf->runtimedata->nthread_lock, &func_new_qf->runtimedata->nthread_lock);
-			printf("\tInsert Lock before: %d %d\n", qf->runtimedata->insert_lock, func_new_qf->runtimedata->insert_lock);
+			//printf("\tInsert Lock before: %d %d\n", qf->runtimedata->insert_lock, func_new_qf->runtimedata->insert_lock);
 			//func_new_qf->runtimedata->nthread_lock = qf->runtimedata->nthread_lock;
 			//func_new_qf->runtimedata->iterator_lock = qf->runtimedata->iterator_lock;
 			//func_new_qf->runtimedata->insert_lock = qf->runtimedata->insert_lock; // TODO: Needed??
@@ -2145,10 +2145,10 @@ int qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, uint8_t
 	// Checks if resize is happening and joins if so
 	if (qf->runtimedata->resize_init) {
 		while (!qf->runtimedata->resize_in_progress && qf->runtimedata->resize_init) { sleep(1); } // TODO: CHANGE THIS TOO!!!
-		qf_spin_unlock(&qf->runtimedata->insert_lock);
 
 		if (qf->runtimedata->resize_finished)
 			return QF_NEED_RESIZE;
+		qf_spin_unlock(&qf->runtimedata->insert_lock);
 		
 		printf("\tJoining resize, new_qf: %p\n", qf->runtimedata->new_qf);
 		if (qf->runtimedata->container_resize(qf, qf->metadata->nslots * 2) < 0)
