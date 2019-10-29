@@ -112,9 +112,6 @@ extern "C" {
 	bool qf_malloc(QF *qf, uint64_t nslots, uint64_t key_bits, uint64_t
 								 value_bits, enum qf_hashmode hash, uint32_t seed);
 
-	// DEBUG: Remove
-	bool qf_free_debug(QF *qf, int current_thread);
-
 	bool qf_free(QF *qf);
 
 	/* Resize the QF to the specified number of slots.  Uses malloc() to
@@ -124,9 +121,7 @@ extern "C" {
 	 * */
 	int64_t qf_resize_malloc(QF *qf, uint64_t nslots);
 
-	int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, QF *new_qf, bool is_file);
-
-	int64_t qf_resize_malloc_dev(QF *qf, uint64_t nslots);
+	int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file);
 
 	/* Turn on automatic resizing.  Resizing is performed by calling
 		 qf_resize_malloc, so the CQF must meet the requirements of that

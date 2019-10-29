@@ -60,7 +60,7 @@ extern "C" {
 	//struct __attribute__ ((__packed__)) qfblock;
 	//typedef struct qfblock qfblock;
 
-  typedef struct file_info {
+	typedef struct file_info {
 		int fd;
 		char *filepath;
 	} file_info;
@@ -77,22 +77,19 @@ extern "C" {
 	typedef struct quotient_filter_runtime_data {
 		file_info f_info;
 		uint32_t auto_resize;
-		uint32_t resize_init;
-		uint32_t resize_in_progress;
-		uint32_t resize_finished;
+		int resize_in_progress;
+		int joining_resize;
 		QF *new_qf;
 		int nthreads;
 		uint64_t current_chunk;
 		int64_t ret_numkeys;
+		int ret_error;
 		bool resize_error;
 		int64_t (*container_resize)(QF *qf, uint64_t nslots);
 		pc_t pc_nelts;
 		pc_t pc_ndistinct_elts;
 		pc_t pc_noccupied_slots;
 		uint64_t num_locks;
-		volatile int nthread_lock;
-		volatile int iterator_lock;
-		volatile int insert_lock;
 		volatile int metadata_lock;
 		volatile int *locks;
 		wait_time_data *wait_times;
