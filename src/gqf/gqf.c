@@ -1688,8 +1688,6 @@ uint64_t qf_init(QF *qf, uint64_t nslots, uint64_t key_bits, uint64_t value_bits
 	qf->runtimedata->container_resize = qf_resize_malloc;
 	qf->runtimedata->resize_in_progress = 0;
 	qf->runtimedata->joining_resize = 0;
-	qf->runtimedata->new_qf = NULL;
-	qf->runtimedata->nthreads = 0;
 	/* initialize all the locks to 0 */
 	qf->runtimedata->metadata_lock = 0;
 	qf->runtimedata->locks = (volatile int *)calloc(qf->runtimedata->num_locks,
@@ -1847,35 +1845,47 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 	qf_spin_lock(&qf->runtimedata->metadata_lock, QF_WAIT_FOR_LOCK);
 #endif
 	// Performed by first thread to answer
-	if (qf->runtimedata->nthreads == 0) {
-		qf->runtimedata->new_qf = (QF*)malloc(sizeof(QF));
-		if (!qf_malloc(qf->runtimedata->new_qf, nslots, qf->metadata->key_bits,
-								 qf->metadata->value_bits, qf->metadata->hash_mode,
-								 qf->metadata->seed))
-		{
-			free(qf->runtimedata->new_qf);
-			qf->runtimedata->new_qf = NULL;
+	//printf("\tEntering resize_helper\n");
+	if (!qf->runtimedata->resize_in_progress) {
+		if (qf->runtimedata->r_info == NULL) {
+			qf->runtimedata->r_info = (resize_info*)malloc(sizeof(resize_info));
+			qf->runtimedata->r_info->new_qf = (QF*)malloc(sizeof(QF));
+			if (!qf_malloc(qf->runtimedata->r_info->new_qf, nslots, qf->metadata->key_bits,
+									 qf->metadata->value_bits, qf->metadata->hash_mode,
+									 qf->metadata->seed))
+			{
+				free(qf->runtimedata->r_info);
+				qf_spin_unlock(&qf->runtimedata->metadata_lock);
+				return -1;
+			}
+
+			if (qf->runtimedata->auto_resize)
+				qf_set_auto_resize(qf->runtimedata->r_info->new_qf, true);
+
+			qf->runtimedata->resize_in_progress = 1;
+			qf->runtimedata->cleanup_in_progress = 0;
+
+			qf->runtimedata->r_info->nthreads = 0;
+			qf->runtimedata->r_info->nthreads_finish = 0;
+			qf->runtimedata->r_info->current_chunk = 0;
+			qf->runtimedata->r_info->ret_numkeys = 0;
+			qf->runtimedata->r_info->resize_error = 0;
+			qf->runtimedata->r_info->ret_error = 0;
+		} else {
+			// Another resize just finished
+			// Exit this function
+			qf->runtimedata->joining_resize -= 1;
 			qf_spin_unlock(&qf->runtimedata->metadata_lock);
-			return -1;
+			return 0;
 		}
-
-		// TODO: Needed??
-		if (qf->runtimedata->auto_resize)
-			qf_set_auto_resize(qf->runtimedata->new_qf, true);
-
-		qf->runtimedata->nthreads = 0;
-		qf->runtimedata->resize_in_progress = 0;
-
-		qf->runtimedata->ret_numkeys = 0;
-		qf->runtimedata->resize_error = 0;
-		qf->runtimedata->ret_error = 0;
-		qf->runtimedata->current_chunk = 0;
-		qf->runtimedata->resize_in_progress = 1;
 	}
+	func_new_qf = qf->runtimedata->r_info->new_qf;
+	qf->runtimedata->r_info->nthreads += 1;
+	qf->runtimedata->r_info->nthreads_finish += 1;
 	qf->runtimedata->joining_resize -= 1;
-	func_new_qf = qf->runtimedata->new_qf;
-	qf->runtimedata->nthreads += 1;
 	qf_spin_unlock(&qf->runtimedata->metadata_lock);
+
+	//printf("\tEntering resize_helper as thread %d\n", qf->runtimedata->r_info->nthreads);
 
 	// Copy keys from qf into func_new_qf
 	// Runs until error or end of qf
@@ -1883,12 +1893,12 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 	uint64_t chunk_start, chunk_end;
 	int thread_ret_numkeys = 0;
 	while (true) {
-		if (qf->runtimedata->resize_error)
+		if (qf->runtimedata->r_info->resize_error)
 			break;
 
 		// Iterates through CQF_RESIZE_CHUNK slots
 		// Gets beginning of chunk and increments index in struct atomically
-		chunk_start = __sync_fetch_and_add(&qf->runtimedata->current_chunk, CQF_RESIZE_CHUNK);
+		chunk_start = __sync_fetch_and_add(&qf->runtimedata->r_info->current_chunk, CQF_RESIZE_CHUNK);
 		if (qf_iterator_from_position(qf, &qfi, chunk_start) == QFI_INVALID) {
 			break;
 		}
@@ -1912,8 +1922,8 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 					continue;
 
 				fprintf(stderr, "Failed to insert key: %ld into the new CQF.\n", key);
-				qf->runtimedata->ret_error = ret;
-				qf->runtimedata->resize_error = 1;
+				qf->runtimedata->r_info->ret_error = ret;
+				qf->runtimedata->r_info->resize_error = 1;
 				break;
 			}
 
@@ -1921,8 +1931,12 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 		} while(qfi.run < chunk_end && !qfi_end(&qfi));
 	}
 
+	bool resize_error;
+	int ret_error;
+	int64_t ret_numkeys = 0;
+
 	// Need to wait for threads from qf_insert to join before continuing with clean-up
-	// Otherwise, memcpy() would clear qf->runtimedata->current_chunk,
+	// Otherwise, memcpy() would clear qf->runtimedata->r_info->current_chunk,
 	// leading to extra resize by the other thread.
 	// TODO: Clean up this entire check
 #ifdef LOG_WAIT_TIME
@@ -1930,8 +1944,9 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 #else
 	qf_spin_lock(&qf->runtimedata->metadata_lock, QF_WAIT_FOR_LOCK);
 #endif
-	// Clear qf->runtimedata->resize_in_progress to limit number of threads trying to join
+	// Clear qf->runtimedata->r_info->resize_in_progress to limit number of threads trying to join
 	qf->runtimedata->resize_in_progress = 0;
+	//printf("\%d threads left to join\n", qf->runtimedata->joining_resize);
 	while (qf->runtimedata->joining_resize != 0) {
 		qf_spin_unlock(&qf->runtimedata->metadata_lock);
 		sleep(1); // TODO: Change this!!!
@@ -1942,35 +1957,70 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 	#endif
 	}
 
-	qf->runtimedata->nthreads -= 1;
-	qf->runtimedata->ret_numkeys += thread_ret_numkeys;
+	qf->runtimedata->r_info->nthreads -= 1;
+	qf->runtimedata->r_info->ret_numkeys += thread_ret_numkeys;
+	
+	//printf("\tThread %d leaving join loop\n", qf->runtimedata->r_info->nthreads);
 
-	if (qf->runtimedata->resize_error) {
-		fprintf(stderr, "Failed to insert all keys into new CQF.\n");
+	// Move malloc + free to qf_resize_malloc() and qf_resize_file()?
+	if (qf->runtimedata->r_info->nthreads != 0) {
+		qf_spin_unlock(&qf->runtimedata->metadata_lock);
 
-		if (qf->runtimedata->nthreads == 0) {
-			func_new_qf->runtimedata->resize_error = qf->runtimedata->resize_error;
-			func_new_qf->runtimedata->ret_error = qf->runtimedata->ret_error;
+		//printf("\tWaiting for other threads\n");
 
+		// Wait for all threads to finish resizing
+		while (qf->runtimedata->r_info->nthreads != 0) { sleep(1); } // TODO: Change this!!!
+
+		//printf("\tThreads finished, checking for resize error\n");
+
+	#ifdef LOG_WAIT_TIME
+		qf_spin_lock(qf, &qf->runtimedata->metadata_lock, qf->runtimedata->num_locks, QF_WAIT_FOR_LOCK);
+	#else
+		qf_spin_lock(&qf->runtimedata->metadata_lock, QF_WAIT_FOR_LOCK);
+	#endif
+		resize_error = qf->runtimedata->r_info->resize_error;
+
+		if (resize_error)
+			ret_error = qf->runtimedata->r_info->ret_error;
+		else
+			ret_numkeys = qf->runtimedata->r_info->ret_numkeys;
+
+		qf->runtimedata->r_info->nthreads_finish -= 1;
+		//qf_spin_unlock(&qf->runtimedata->metadata_lock);
+	} else {
+		qf->runtimedata->cleanup_in_progress = 1;
+		qf->runtimedata->r_info->nthreads_finish -= 1;
+		qf_spin_unlock(&qf->runtimedata->metadata_lock);
+
+		//printf("\tThread for clean-up\n");
+
+		// Wait for all threads to perform resize_error check
+		// and get local reference to ret_error/ret_numkeys
+		while (qf->runtimedata->r_info->nthreads_finish != 0) { sleep(1); } // TODO: Change this!!!
+
+		//printf("\tResize error check by threads finished, continuing with clean-up\n");
+
+	#ifdef LOG_WAIT_TIME
+		qf_spin_lock(qf, &qf->runtimedata->metadata_lock, qf->runtimedata->num_locks, QF_WAIT_FOR_LOCK);
+	#else
+		qf_spin_lock(&qf->runtimedata->metadata_lock, QF_WAIT_FOR_LOCK);
+	#endif
+		resize_error = qf->runtimedata->r_info->resize_error;
+		if (resize_error) {
+			ret_error = qf->runtimedata->r_info->ret_error;
+			//qf_spin_unlock(&qf->runtimedata->metadata_lock);
 			if (is_file) {
 				// Delete initialized new CQF
 				qf_deletefile(func_new_qf);
 			} else {
 				qf_free(func_new_qf);
-				free(func_new_qf);
 			}
-		}
-		qf_spin_unlock(&qf->runtimedata->metadata_lock);
-	} else {
-		// Performed only by last thread to exit
-		if (qf->runtimedata->nthreads == 0) {
-			
-			// Copy over to func_new_qf
-			// Data gets copied back with memcpy()
-			//func_new_qf->runtimedata->nthreads = qf->runtimedata->nthreads;
-			func_new_qf->runtimedata->ret_numkeys = qf->runtimedata->ret_numkeys;
-			//func_new_qf->runtimedata->current_chunk = qf->runtimedata->current_chunk;
-			qf_spin_unlock(&qf->runtimedata->metadata_lock);
+			free(func_new_qf);
+			free(qf->runtimedata->r_info);
+		} else {
+			// Performed only by last thread to exit
+				
+			ret_numkeys = qf->runtimedata->r_info->ret_numkeys;
 			
 			if (is_file) {
 				// Copy old QF path in temp and delete old CQF
@@ -1981,29 +2031,37 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 				}
 				strcpy(path, qf->runtimedata->f_info.filepath);
 
+				free(qf->runtimedata->r_info);
 				qf_deletefile(qf);
 				memcpy(qf, func_new_qf, sizeof(QF));
+				free(func_new_qf);
 
 				rename(qf->runtimedata->f_info.filepath, path);
 				strcpy(qf->runtimedata->f_info.filepath, path);
 			} else {
+				free(qf->runtimedata->r_info);
 				qf_free(qf);
 				memcpy(qf, func_new_qf, sizeof(QF));
 				free(func_new_qf);
 			}
-		} else {
-			qf_spin_unlock(&qf->runtimedata->metadata_lock);
 		}
-	}
 
-	// TODO: Need access to freed variables here.
-	// Move malloc + free to qf_resize_malloc() and qf_resize_file()?
-	while (qf->runtimedata->nthreads != 0) { sleep(1); } // TODO: Change this!!!
+		qf->runtimedata->cleanup_in_progress = 0;
+		//printf("\tClean-up finished\n");
+	}
+	qf_spin_unlock(&qf->runtimedata->metadata_lock);
+
+	// Wait for cleanup to finish and qf metadata to be copied over
+	while (__sync_fetch_and_or(&qf->runtimedata->cleanup_in_progress, 0)) { sleep(1); } // TODO: Change this!!!
 	
-	if (qf->runtimedata->resize_error)
-		return qf->runtimedata->ret_error;
-	else
-		return qf->runtimedata->ret_numkeys;
+	//printf("Exiting resize\n");
+	
+	if (resize_error) {
+		fprintf(stderr, "Failed to insert all keys into new CQF.\n");
+		return ret_error;
+	} else {
+		return ret_numkeys;
+	}
 }
 
 uint64_t qf_resize(QF* qf, uint64_t nslots, void* buffer, uint64_t buffer_len)

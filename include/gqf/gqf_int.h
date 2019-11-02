@@ -74,17 +74,23 @@ extern "C" {
 		uint64_t locks_acquired_single_attempt;
 	} wait_time_data;
 
-	typedef struct quotient_filter_runtime_data {
-		file_info f_info;
-		uint32_t auto_resize;
-		int resize_in_progress;
-		int joining_resize;
+	typedef struct resize_info {
 		QF *new_qf;
 		int nthreads;
+		int nthreads_finish;
 		uint64_t current_chunk;
 		int64_t ret_numkeys;
 		int ret_error;
 		bool resize_error;
+	} resize_info;
+
+	typedef struct quotient_filter_runtime_data {
+		file_info f_info;
+		uint32_t auto_resize;
+		resize_info *r_info;
+		int resize_in_progress;
+		int cleanup_in_progress;
+		int joining_resize;
 		int64_t (*container_resize)(QF *qf, uint64_t nslots);
 		pc_t pc_nelts;
 		pc_t pc_ndistinct_elts;
