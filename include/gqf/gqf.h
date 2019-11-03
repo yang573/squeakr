@@ -135,7 +135,6 @@ extern "C" {
 #define QF_NO_SPACE (-1)
 #define QF_COULDNT_LOCK (-2)
 #define QF_DOESNT_EXIST (-3)
-#define QF_NEED_RESIZE (-4)
 	
 	/* Increment the counter for this key/value pair by count. 
 	 * Return value:
@@ -248,8 +247,8 @@ extern "C" {
 	typedef struct quotient_filter_iterator quotient_filter_iterator;
 	typedef quotient_filter_iterator QFi;
 
-#define QF_INVALID (-5)
-#define QFI_INVALID (-6)
+#define QF_INVALID (-4)
+#define QFI_INVALID (-5)
 	
 	/* Initialize an iterator starting at the given position.
 	 * Return value:

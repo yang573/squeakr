@@ -1907,20 +1907,12 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 
 		// TODO: Why isn't the var init outside the while loop?
 		uint64_t key, value, count;
-		int ret = 0;
+		int ret;
 		do {
-			// In case of resize, skip this so the previous elements can be inserted
-			if (ret != QF_NEED_RESIZE)
-			{
-				qfi_get_hash(&qfi, &key, &value, &count);
-				qfi_next(&qfi);
-			}
-
+			qfi_get_hash(&qfi, &key, &value, &count);
+			qfi_next(&qfi);
 			ret = qf_insert(func_new_qf, key, value, count, QF_WAIT_FOR_LOCK | QF_KEY_IS_HASH);
 			if (ret < 0) {
-				if (ret == QF_NEED_RESIZE)
-					continue;
-
 				fprintf(stderr, "Failed to insert key: %ld into the new CQF.\n", key);
 				qf->runtimedata->r_info->ret_error = ret;
 				qf->runtimedata->r_info->resize_error = 1;
@@ -2086,16 +2078,14 @@ uint64_t qf_resize(QF* qf, uint64_t nslots, void* buffer, uint64_t buffer_len)
 
 	// copy keys from qf into new_qf
 	QFi qfi;
-	int ret = 0;
+	uint64_t key, value, count;
+	int ret;
 	qf_iterator_from_position(qf, &qfi, 0);
 	do {
-		uint64_t key, value, count;
-		if (ret != QF_NEED_RESIZE) {
-			qfi_get_hash(&qfi, &key, &value, &count);
-			qfi_next(&qfi);
-		}
+		qfi_get_hash(&qfi, &key, &value, &count);
+		qfi_next(&qfi);
 		ret = qf_insert(&new_qf, key, value, count, QF_NO_LOCK | QF_KEY_IS_HASH);
-		if (ret < 0 && ret != QF_NEED_RESIZE) {
+		if (ret < 0) {
 			fprintf(stderr, "Failed to insert key: %ld into the new CQF.\n", key);
 			abort();
 		}
@@ -2133,7 +2123,6 @@ int qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, uint8_t
 			fprintf(stdout, "Resizing failed.\n");
 			return QF_NO_SPACE;
 		}
-		return QF_NEED_RESIZE;
 	} else {
 		qf_spin_unlock(&qf->runtimedata->metadata_lock);
 	}
