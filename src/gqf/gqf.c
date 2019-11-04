@@ -2044,7 +2044,21 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 	qf_spin_unlock(&qf->runtimedata->metadata_lock);
 
 	// Wait for cleanup to finish and qf metadata to be copied over
-	while (__sync_fetch_and_or(&qf->runtimedata->cleanup_in_progress, 0)) { sleep(1); } // TODO: Change this!!!
+#ifdef LOG_WAIT_TIME
+	qf_spin_lock(qf, &qf->runtimedata->metadata_lock, qf->runtimedata->num_locks, QF_WAIT_FOR_LOCK);
+#else
+	qf_spin_lock(&qf->runtimedata->metadata_lock, QF_WAIT_FOR_LOCK);
+#endif
+	while (qf->runtimedata->cleanup_in_progress) {
+		qf_spin_unlock(&qf->runtimedata->metadata_lock);
+		sleep(1); // TODO: Change this!!!
+	#ifdef LOG_WAIT_TIME
+		qf_spin_lock(qf, &qf->runtimedata->metadata_lock, qf->runtimedata->num_locks, QF_WAIT_FOR_LOCK);
+	#else
+		qf_spin_lock(&qf->runtimedata->metadata_lock, QF_WAIT_FOR_LOCK);
+	#endif
+	}
+	qf_spin_unlock(&qf->runtimedata->metadata_lock);
 	
 	//printf("Exiting resize\n");
 	
