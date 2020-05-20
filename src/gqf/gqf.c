@@ -8,11 +8,7 @@
  */
 
 #include <stdlib.h>
-#if 0
 # include <assert.h>
-#else
-# define assert(x)
-#endif
 #include <string.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -1635,11 +1631,11 @@ uint64_t qf_init(QF *qf, uint64_t nslots, uint64_t key_bits, uint64_t value_bits
 	xnslots = nslots + 10*sqrt((double)nslots);
 	nblocks = (xnslots + QF_SLOTS_PER_BLOCK - 1) / QF_SLOTS_PER_BLOCK;
 	key_remainder_bits = key_bits;
-	while (nslots > 1) {
-		assert(key_remainder_bits > 0);
+	while (nslots > 1 && key_remainder_bits > 0) {
 		key_remainder_bits--;
 		nslots >>= 1;
 	}
+	assert(key_remainder_bits >= 2);
 
 	bits_per_slot = key_remainder_bits + value_bits;
 	assert (QF_BITS_PER_SLOT == 0 || QF_BITS_PER_SLOT == qf->metadata->bits_per_slot);
@@ -2152,7 +2148,7 @@ int qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, uint8_t
 		if (qf->runtimedata->auto_resize) {
 			qf->runtimedata->joining_resize += 1;
 			qf_spin_unlock(&qf->runtimedata->metadata_lock);
-			fprintf(stdout, "Resizing the CQF.\n");
+			/*fprintf(stdout, "Resizing the CQF.\n");*/
 
 			if (qf->runtimedata->container_resize(qf, qf->metadata->nslots * 2) < 0)
 			{
@@ -2498,8 +2494,8 @@ int64_t qf_iterator_from_position(const QF *qf, QFi *qfi, uint64_t position)
 	return qfi->current;
 }
 
-int64_t qf_iterator_key_value(const QF *qf, QFi *qfi, uint64_t key, uint64_t
-															value, uint8_t flags)
+int64_t qf_iterator_from_key_value(const QF *qf, QFi *qfi, uint64_t key,
+																	 uint64_t value, uint8_t flags)
 {
 	if (key >= qf->metadata->range) {
 		qfi->current = 0xffffffffffffffff;
