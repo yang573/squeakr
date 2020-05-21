@@ -8,7 +8,7 @@
  */
 
 #include <stdlib.h>
-# include <assert.h>
+#include <assert.h>
 #include <string.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -1850,6 +1850,7 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 									 qf->metadata->value_bits, qf->metadata->hash_mode,
 									 qf->metadata->seed))
 			{
+				free(qf->runtimedata->r_info->new_qf);
 				free(qf->runtimedata->r_info);
 				qf_spin_unlock(&qf->runtimedata->metadata_lock);
 				return -1;
@@ -1895,9 +1896,10 @@ int64_t qf_resize_malloc_helper(QF *qf, uint64_t nslots, bool is_file)
 		// Iterates through CQF_RESIZE_CHUNK slots
 		// Gets beginning of chunk and increments index in struct atomically
 		chunk_start = __sync_fetch_and_add(&qf->runtimedata->r_info->current_chunk, CQF_RESIZE_CHUNK);
-		if (qf_iterator_from_position(qf, &qfi, chunk_start) == QFI_INVALID) {
+		if (chunk_start >= qf->metadata->nslots)
 			break;
-		}
+		if (qf_iterator_from_position(qf, &qfi, chunk_start) == QFI_INVALID)
+			break;
 		// Gets the end of the chunk
 		chunk_end = chunk_start + CQF_RESIZE_CHUNK;
 
